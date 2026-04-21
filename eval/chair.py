@@ -13,6 +13,18 @@ import tqdm
 import pickle
 from collections import defaultdict
 
+# Try to download NLTK data. In production, this should be handled once during setup.
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+    nltk.data.find('taggers/averaged_perceptron_tagger_eng')
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    print("Downloading required NLTK datasets for CHAIR metric...")
+    nltk.download('punkt_tab')
+    nltk.download('averaged_perceptron_tagger_eng')
+    nltk.download('wordnet')
+    nltk.download('punkt')
+
 # Try pattern, fallback to nltk lemmatizer
 try:
     from pattern.en import singularize
