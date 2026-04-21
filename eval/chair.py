@@ -1,238 +1,415 @@
-import json
-import logging
-from typing import List, Dict, Union
-import nltk
-from nltk.corpus import wordnet
-from nltk.stem import WordNetLemmatizer
-import argparse
+'''
+Adapted from the official CHAIR metric provided by the user.
+Modified to maintain compatibility with the Colab notebook command line arguments:
+--input_file, --output_file, and gracefully handle missing Train annotations.
+'''
+
 import os
+import sys
+import nltk
+import json
+import argparse
+import tqdm
+import pickle
+from collections import defaultdict
 
-logger = logging.getLogger(__name__)
-
-# Try to download NLTK data. In production, this should be handled once during setup.
+# Try pattern, fallback to nltk lemmatizer
 try:
-    nltk.data.find('tokenizers/punkt_tab')
-    nltk.data.find('taggers/averaged_perceptron_tagger_eng')
-    nltk.data.find('corpora/wordnet')
-except LookupError:
-    logger.info("Downloading required NLTK datasets for CHAIR metric...")
-    nltk.download('punkt_tab')
-    nltk.download('averaged_perceptron_tagger_eng')
-    nltk.download('wordnet')
+    from pattern.en import singularize
+except ImportError:
+    from nltk.stem import WordNetLemmatizer
+    _lemmatizer = WordNetLemmatizer()
+    def singularize(word):
+        return _lemmatizer.lemmatize(word)
 
-class CHAIREvaluator:
-    """
-    Evaluator for Captioning Hallucination Assessment with Image Relevance (CHAIR).
-    Measures CHAIRs (per sentence) and CHAIRi (per image) metrics.
-    Requires MS-COCO annotations to evaluate against ground truth.
-    """
-    def __init__(self, coco_annotation_file: str = None, synonyms_file: str = None):
-        self.lemmatizer = WordNetLemmatizer()
-        self.image_to_objects = {}  # image_id -> set of COCO object classes
-        self.synonyms_dict = {}     # word -> COCO main class
-        
-        # Load default synonyms mapping (usually mappings from custom words to 80 COCO categories)
-        if synonyms_file:
-            self._load_synonyms(synonyms_file)
-        else:
-            self._build_default_synonyms()
-            
-        if coco_annotation_file and os.path.exists(coco_annotation_file):
-            self._load_coco_annotations(coco_annotation_file)
-        else:
-            logger.warning("No valid COCO annotation file provided or found. GT objects won't be loaded.")
-            
-    def _build_default_synonyms(self):
-        """
-        Fallback dictionary covering the 80 standard MS-COCO classes 
-        and common aliases when a real synonyms.txt isn't provided.
-        """
-        logger.warning("Using built-in MS-COCO 80 classes. Provide a full synonyms_file for official mapping.")
-        coco_80 = [
-            "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", 
-            "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", 
-            "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", 
-            "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", 
-            "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", 
-            "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", 
-            "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", 
-            "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", 
-            "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
-        ]
-        
-        self.synonyms_dict = {c: c for c in coco_80}
-        
-        # Add basic common visual synonyms
-        aliases = {
-            "man": "person", "woman": "person", "child": "person", "boy": "person", "girl": "person", "people": "person",
-            "auto": "car", "automobile": "car", "cab": "car", "taxi": "car",
-            "puppy": "dog", "kitten": "cat", "feline": "cat", "hound": "dog",
-            "plane": "airplane", "jet": "airplane", "aeroplane": "airplane",
-            "sofa": "couch", "television": "tv", "monitor": "tv", 
-            "cellphone": "cell phone", "phone": "cell phone", "smartphone": "cell phone",
-            "bike": "bicycle", "motorbike": "motorcycle", "vespa": "motorcycle",
-            "bag": "backpack", "purse": "handbag",
-            "laptop computer": "laptop", "pc": "laptop",
-            "table": "dining table", "desk": "dining table",
-            "mug": "cup", "glass": "wine glass"
-        }
-        self.synonyms_dict.update(aliases)
+synonyms_txt = '''
+person, girl, boy, man, woman, kid, child, chef, baker, people, adult, rider, children, baby, worker, passenger, sister, biker, policeman, cop, officer, lady, cowboy, bride, groom, male, female, guy, traveler, mother, father, gentleman, pitcher, player, skier, snowboarder, skater, skateboarder, person, woman, guy, foreigner, child, gentleman, caller, offender, coworker, trespasser, patient, politician, soldier, grandchild, serviceman, walker, drinker, doctor, bicyclist, thief, buyer, teenager, student, camper, driver, solider, hunter, shopper, villager
+bicycle, bike, bicycle, bike, unicycle, minibike, trike
+car, automobile, van, minivan, sedan, suv, hatchback, cab, jeep, coupe, taxicab, limo, taxi
+motorcycle, scooter,  motor bike, motor cycle, motorbike, scooter, moped
+airplane, jetliner, plane, air plane, monoplane, aircraft, jet, jetliner, airbus, biplane, seaplane
+bus, minibus, trolley
+train, locomotive, tramway, caboose
+truck, pickup, lorry, hauler, firetruck
+boat, ship, liner, sailboat, motorboat, dinghy, powerboat, speedboat, canoe, skiff, yacht, kayak, catamaran, pontoon, houseboat, vessel, rowboat, trawler, ferryboat, watercraft, tugboat, schooner, barge, ferry, sailboard, paddleboat, lifeboat, freighter, steamboat, riverboat, battleship, steamship
+traffic light, street light, traffic signal, stop light, streetlight, stoplight
+fire hydrant, hydrant
+stop sign
+parking meter
+bench, pew
+bird, ostrich, owl, seagull, goose, duck, parakeet, falcon, robin, pelican, waterfowl, heron, hummingbird, mallard, finch, pigeon, sparrow, seabird, osprey, blackbird, fowl, shorebird, woodpecker, egret, chickadee, quail, bluebird, kingfisher, buzzard, willet, gull, swan, bluejay, flamingo, cormorant, parrot, loon, gosling, waterbird, pheasant, rooster, sandpiper, crow, raven, turkey, oriole, cowbird, warbler, magpie, peacock, cockatiel, lorikeet, puffin, vulture, condor, macaw, peafowl, cockatoo, songbird
+cat, kitten, feline, tabby
+dog, puppy, beagle, pup, chihuahua, schnauzer, dachshund, rottweiler, canine, pitbull, collie, pug, terrier, poodle, labrador, doggie, doberman, mutt, doggy, spaniel, bulldog, sheepdog, weimaraner, corgi, cocker, greyhound, retriever, brindle, hound, whippet, husky
+horse, colt, pony, racehorse, stallion, equine, mare, foal, palomino, mustang, clydesdale, bronc, bronco
+sheep, lamb, ram, lamb, goat, ewe
+cow, cattle, oxen, ox, calf, cattle, holstein, heifer, buffalo, bull, zebu, bison 
+elephant
+bear, panda
+zebra
+giraffe
+backpack, knapsack
+umbrella
+handbag, wallet, purse, briefcase
+tie, bow, bow tie
+suitcase, suit case, luggage
+frisbee
+skis, ski
+snowboard
+sports ball, ball
+kite
+baseball bat
+baseball glove
+skateboard
+surfboard, longboard, skimboard, shortboard, wakeboard
+tennis racket, racket
+bottle
+wine glass
+cup
+fork
+knife, pocketknife, knive
+spoon
+bowl, container
+banana
+apple
+sandwich, burger, sub, cheeseburger, hamburger
+orange
+broccoli
+carrot
+hot dog
+pizza
+donut, doughnut, bagel
+cake,  cheesecake, cupcake, shortcake, coffeecake, pancake
+chair, seat, stool
+couch, sofa, recliner, futon, loveseat, settee, chesterfield 
+potted plant, houseplant
+bed
+dining table, table, desk
+toilet, urinal, commode, toilet, lavatory, potty
+tv, monitor, televison, television
+laptop, computer, notebook, netbook, lenovo, macbook, laptop computer
+mouse
+remote
+keyboard
+cell phone, mobile phone, phone, cellphone, telephone, phon, smartphone, iPhone
+microwave
+oven, stovetop, stove, stove top oven
+toaster
+sink
+refrigerator, fridge, fridge, freezer
+book
+clock
+vase
+scissors
+teddy bear, teddybear
+hair drier, hairdryer
+toothbrush
+'''
 
-    def _load_synonyms(self, path: str):
-        with open(path, 'r', encoding='utf-8') as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    # typical format: word class
-                    self.synonyms_dict[parts[0]] = parts[1]
+def combine_coco_captions(annotation_path):
+    val_path = '%s/captions_val2014.json' % annotation_path
+    train_path = '%s/captions_train2014.json' % annotation_path
+    
+    if not os.path.exists(val_path):
+        raise Exception(f"Please download MSCOCO caption annotations for val set. Missing: {val_path}")
 
-    def _load_coco_annotations(self, path: str):
-        logger.info(f"Loading COCO annotations from {path}")
-        with open(path, 'r', encoding='utf-8') as f:
-            coco_data = json.load(f)
-            
-        # Build mapping from category_id -> name
-        categories = {cat['id']: cat['name'] for cat in coco_data['categories']}
+    val_caps = json.load(open(val_path))
+    
+    images = val_caps['images']
+    annotations = val_caps['annotations']
+    
+    # Gracefully handle missing train sets
+    if os.path.exists(train_path):
+        train_caps = json.load(open(train_path))
+        images += train_caps['images']
+        annotations += train_caps['annotations']
+
+    all_caps = {
+        'info': val_caps.get('info', {}),
+        'licenses': val_caps.get('licenses', []),
+        'images': images,
+        'annotations': annotations
+    }
+    return all_caps 
+
+def combine_coco_instances(annotation_path):
+    val_path = '%s/instances_val2014.json' % annotation_path
+    train_path = '%s/instances_train2014.json' % annotation_path
+    
+    if not os.path.exists(val_path):
+        raise Exception(f"Please download MSCOCO instance annotations for val set. Missing: {val_path}")
+
+    val_instances = json.load(open(val_path))
+    
+    images = val_instances['images']
+    annotations = val_instances['annotations']
+
+    if os.path.exists(train_path):
+        train_instances = json.load(open(train_path))
+        images += train_instances['images']
+        annotations += train_instances['annotations']
+
+    all_instances = {
+        'info': val_instances.get('info', {}),
+        'licenses': val_instances.get('licenses', []),
+        'categories': val_instances['categories'],
+        'images': images,
+        'annotations': annotations
+    }
+    return all_instances 
+
+class CHAIR(object):
+    def __init__(self, coco_path):
+        self.imid_to_objects = defaultdict(list)
+        self.coco_path = coco_path
+
+        synonyms = synonyms_txt.splitlines()
+        synonyms = [s.strip().split(', ') for s in synonyms if s.strip()]
+        self.mscoco_objects = []
+        self.inverse_synonym_dict = {}
+        for synonym in synonyms:
+            self.mscoco_objects.extend(synonym)
+            for s in synonym:
+                self.inverse_synonym_dict[s] = synonym[0]
+
+        coco_double_words = ['motor bike', 'motor cycle', 'air plane', 'traffic light', 'street light', 'traffic signal', 'stop light', 'fire hydrant', 'stop sign', 'parking meter', 'suit case', 'sports ball', 'baseball bat', 'baseball glove', 'tennis racket', 'wine glass', 'hot dog', 'cell phone', 'mobile phone', 'teddy bear', 'hair drier', 'potted plant', 'bow tie', 'laptop computer', 'stove top oven', 'hot dog', 'teddy bear', 'home plate', 'train track']
+        animal_words = ['bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'animal', 'cub']
+        vehicle_words = ['jet', 'train']
         
-        # Build ground truth objects per image
-        for ann in coco_data['annotations']:
-            img_id = str(ann['image_id'])
-            # Sometimes image_ids are padded. Clean it to make sure it matches predictions.
-            # Convert to int then str to remove leading zeros, standard practice.
-            clean_img_id = str(int(img_id))
-            cat_name = categories[ann['category_id']]
-            
-            if clean_img_id not in self.image_to_objects:
-                self.image_to_objects[clean_img_id] = set()
-            self.image_to_objects[clean_img_id].add(cat_name)
-
-    def extract_objects(self, caption: str) -> List[str]:
-        """
-        Tokenizes caption, extracts nouns, and returns mapped COCO categories.
-        """
-        tokens = nltk.word_tokenize(caption.lower())
-        tagged = nltk.pos_tag(tokens)
+        self.double_word_dict = {}
+        for double_word in coco_double_words:
+            self.double_word_dict[double_word] = double_word
+        for animal_word in animal_words:
+            self.double_word_dict['baby %s' %animal_word] = animal_word
+            self.double_word_dict['adult %s' %animal_word] = animal_word
+        for vehicle_word in vehicle_words:
+            self.double_word_dict['passenger %s' %vehicle_word] = vehicle_word
+        self.double_word_dict['bow tie'] = 'tie'
+        self.double_word_dict['toilet seat'] = 'toilet'
+        self.double_word_dict['wine glas'] = 'wine glass'
         
-        objects_found = []
-        for word, tag in tagged:
-            # Look for nouns
-            if tag.startswith('NN'):
-                lemma = self.lemmatizer.lemmatize(word)
-                if lemma in self.synonyms_dict:
-                    objects_found.append(self.synonyms_dict[lemma])
-                    
-        return list(set(objects_found)) # unique objects
+        self.get_annotations()
 
-    def evaluate(self, predictions_dict: Dict[str, str]) -> Dict[str, float]:
-        """
-        Evaluates predictions against ground truth.
-        predictions_dict: Dictionary mapping image_id to generated caption.
-        """
-        if not self.image_to_objects:
-            logger.error("COCO annotations not loaded. Cannot evaluate CHAIR correctly.")
-            return {}
-            
-        total_hallucinated_objects = 0
-        total_objects_mentioned = 0
-        total_hallucinated_images = 0
-        total_images = len(predictions_dict)
-        evaluated_images = 0
-        
-        for img_id, caption in predictions_dict.items():
-            # Clean image id string to remove zero-padding if any
-            clean_img_id = str(int(img_id)) if img_id.isdigit() else str(img_id)
-            
-            if clean_img_id not in self.image_to_objects:
-                # If ground truth for this image is missing, assume it's empty
-                # Only objects hallucinated would be ones found.
-                gt_objects = set()
-            else:
-                gt_objects = self.image_to_objects[clean_img_id]
-                
-            extracted_objs = self.extract_objects(caption)
-            evaluated_images += 1
-            
-            has_hallucination = False
-            for obj in extracted_objs:
-                total_objects_mentioned += 1
-                if obj not in gt_objects:
-                    total_hallucinated_objects += 1
-                    has_hallucination = True
-                    
-            if has_hallucination:
-                total_hallucinated_images += 1
-                
-        chairs = 0.0
-        if total_objects_mentioned > 0:
-            chairs = (total_hallucinated_objects / total_objects_mentioned) * 100.0
-            
-        chairi = 0.0
-        if evaluated_images > 0:
-            chairi = (total_hallucinated_images / evaluated_images) * 100.0
-            
-        return {
-            "CHAIRs": chairs,
-            "CHAIRi": chairi,
-            "Total Objects Mentioned": total_objects_mentioned,
-            "Total Hallucinated Objects": total_hallucinated_objects,
-            "Total Images Evaluated": evaluated_images,
-        }
+    def _load_generated_captions_into_evaluator(self, cap_file, image_id_key, caption_key):
+        self.caps, self.eval_imids = load_generated_captions(cap_file, image_id_key, caption_key)
+        assert len(self.caps) == len(self.eval_imids)
 
-def read_predictions(file_path: str) -> Dict[str, str]:
-    predictions = {}
-    with open(file_path, 'r', encoding='utf-8') as f:
+    def caption_to_words(self, caption):
+        words = nltk.word_tokenize(caption.lower())
+        words = [singularize(w) for w in words]
+    
+        i = 0
+        double_words = []
+        idxs = []
+        while i < len(words):
+           idxs.append(i) 
+           double_word = ' '.join(words[i:i+2])
+           if double_word in self.double_word_dict: 
+               double_words.append(self.double_word_dict[double_word])
+               i += 2
+           else:
+               double_words.append(words[i])
+               i += 1
+        words = double_words
+    
+        if ('toilet' in words) & ('seat' in words): words = [word for word in words if word != 'seat']
+    
+        idxs = [idxs[idx] for idx, word in enumerate(words) if word in set(self.mscoco_objects)]
+        words = [word for word in words if word in set(self.mscoco_objects)]
+        node_words = []
+        for word in words:
+            node_words.append(self.inverse_synonym_dict[word])
+        return words, node_words, idxs, double_words
+
+    def get_annotations_from_segments(self):
+        coco_segments = combine_coco_instances(self.coco_path)
+        segment_annotations = coco_segments['annotations']
+
+        id_to_name = {}
+        for cat in coco_segments['categories']:
+            id_to_name[cat['id']] = cat['name']
+
+        for i, annotation in enumerate(segment_annotations):
+            sys.stdout.write("\rGetting annotations for %d/%d segmentation masks" %(i, len(segment_annotations)))
+            imid = annotation['image_id']
+            node_word = self.inverse_synonym_dict[id_to_name[annotation['category_id']]]
+            self.imid_to_objects[imid].append(node_word)
+        print("\n")
+
+    def get_annotations_from_captions(self):
+        # We only use captions if they exist
         try:
-            data = json.load(f)
-            if isinstance(data, list):
-                for item in data:
-                    img_id = item.get('image_id', item.get('id', None))
-                    ans = item.get('caption', item.get('text', str(item)))
-                    if img_id is not None:
-                        predictions[str(img_id)] = ans
-            elif isinstance(data, dict):
-                predictions = {str(k): str(v) for k, v in data.items()}
-        except json.JSONDecodeError:
-            # Try reading as JSONL
-            f.seek(0)
-            for line in f:
-                if not line.strip(): continue
-                item = json.loads(line)
-                img_id = item.get('image_id', item.get('id', None))
-                ans = item.get('caption', item.get('text', str(item)))
-                if img_id is not None:
-                    predictions[str(img_id)] = ans
-    return predictions
+            coco_caps = combine_coco_captions(self.coco_path)
+            caption_annotations = coco_caps['annotations']
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate CHAIR metrics")
-    parser.add_argument("--input_file", type=str, required=True, help="Path to predictions JSON/JSONL")
-    parser.add_argument("--output_file", type=str, required=True, help="Path to output JSON")
-    parser.add_argument("--coco_annotations", type=str, default="", help="Path to instances_val2014.json")
-    parser.add_argument("--synonyms", type=str, default="", help="Path to COCO synonyms mapping")
-    args = parser.parse_args()
-    
-    if not os.path.exists(args.input_file):
-        raise FileNotFoundError(f"Input file not found: {args.input_file}")
+            for i, annotation in enumerate(caption_annotations):
+                sys.stdout.write('\rGetting annotations for %d/%d ground truth captions' %(i, len(caption_annotations)))
+                imid = annotation['image_id']
+                _, node_words, _, _ = self.caption_to_words(annotation['caption'])
+                self.imid_to_objects[imid].extend(node_words)
+            print("\n")
+        except Exception as e:
+            print(f"Skipping ground truth caption annotation loading: {e}")
+
+    def get_annotations(self):
+        self.get_annotations_from_segments() 
+        self.get_annotations_from_captions()
+        for imid in self.imid_to_objects:
+            self.imid_to_objects[imid] = set(self.imid_to_objects[imid])
+
+    def compute_chair(self, cap_file, image_id_key, caption_key):
+        self._load_generated_captions_into_evaluator(cap_file, image_id_key, caption_key)
         
-    print(f"Reading predictions from {args.input_file}...")
-    predictions = read_predictions(args.input_file)
-    print(f"Loaded {len(predictions)} prediction entries.")
+        imid_to_objects = self.imid_to_objects
+        caps = self.caps
+        eval_imids = self.eval_imids
+ 
+        num_caps = 0.
+        num_hallucinated_caps = 0.
+        hallucinated_word_count = 0.
+        coco_word_count = 0.
+        
+        num_recall_gt_objects = 0.
+        num_gt_objects = 0.
 
-    print(f"Initializing CHAIR evaluator...")
-    evaluator = CHAIREvaluator(
-        coco_annotation_file=args.coco_annotations if args.coco_annotations else None,
-        synonyms_file=args.synonyms if args.synonyms else None
-    )
+        output = {'sentences': []} 
+        
+        for i in tqdm.trange(len(caps)):
+            cap :str = caps[i]
+            imid :int = eval_imids[i]
     
-    print("Evaluating metrics...")
-    metrics = evaluator.evaluate(predictions)
-    
-    if metrics:
-        os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
-        with open(args.output_file, 'w', encoding='utf-8') as f:
-            json.dump(metrics, f, indent=4)
+            words, node_words, idxs, raw_words = self.caption_to_words(cap) 
+ 
+            # If ground truth objects are entirely missing for this image, initialize empty
+            gt_objects = imid_to_objects.get(imid, set())
             
-        print(f"Successfully evaluated! Results saved to {args.output_file}")
-        print(json.dumps(metrics, indent=4))
+            cap_dict = {'image_id': imid, 
+                        'caption': cap,
+                        'mscoco_hallucinated_words': [],
+                        'mscoco_gt_words': list(gt_objects),
+                        'mscoco_generated_words': list(node_words),
+                        'hallucination_idxs': [], 
+                        'words': raw_words 
+                        }
+
+            cap_dict['metrics'] = {'CHAIRs': 0, 'CHAIRi': 0, 'Recall': 0}
+ 
+            coco_word_count += len(node_words) 
+            hallucinated = False
+            
+            recall_gt_objects = set()
+            for word, node_word, idx in zip(words, node_words, idxs):
+                if node_word not in gt_objects:
+                    hallucinated_word_count += 1 
+                    cap_dict['mscoco_hallucinated_words'].append((word, node_word))
+                    cap_dict['hallucination_idxs'].append(idx)
+                    hallucinated = True
+                else:
+                    recall_gt_objects.add(node_word)
+    
+            num_caps += 1
+            if hallucinated:
+               num_hallucinated_caps += 1
+            
+            num_gt_objects += len(gt_objects)
+            num_recall_gt_objects += len(recall_gt_objects)
+    
+            cap_dict['metrics']['CHAIRs'] = int(hallucinated)
+            cap_dict['metrics']['CHAIRi'] = 0.
+            cap_dict['metrics']['Recall'] = 0.
+            
+            if len(words) > 0:
+                cap_dict['metrics']['CHAIRi'] = len(cap_dict['mscoco_hallucinated_words'])/float(len(words))
+            
+            if len(gt_objects) > 0:
+                cap_dict['metrics']['Recall'] = len(recall_gt_objects) / len(gt_objects)
+   
+            output['sentences'].append(cap_dict)
+ 
+        chair_s = (num_hallucinated_caps/num_caps) if num_caps > 0 else 0.
+        chair_i = (hallucinated_word_count/coco_word_count) if coco_word_count > 0 else 0.
+        recall = (num_recall_gt_objects / num_gt_objects) if num_gt_objects > 0 else 0.
+    
+        output['overall_metrics'] = {'CHAIRs': chair_s, 'CHAIRi': chair_i, 'Recall': recall}
+        return output 
+
+def load_generated_captions(cap_file, image_id_key:str, caption_key:str):
+    ext = os.path.splitext(cap_file)[-1]
+    if ext == '.json':
+        caps = json.load(open(cap_file))
+    elif ext == '.jsonl':
+        caps = [json.loads(s) for s in open(cap_file)]
     else:
-        print("Evaluation failed. Could not compute metrics (possibly no ground truths loaded).")
+        raise ValueError(f'Unsupported extension {ext} for cap_file: {cap_file}')
+
+    imids = [int(obj[image_id_key]) for obj in caps]
+    caps = [obj[caption_key] for obj in caps]
+       
+    return caps, imids
+
+def save_hallucinated_words(cap_file, cap_dict): 
+    os.makedirs(os.path.dirname(os.path.abspath(cap_file)), exist_ok=True)
+    with open(cap_file, 'w') as f:
+        json.dump(cap_dict, f, indent=2, ensure_ascii=False)
+
+def print_metrics(hallucination_cap_dict, quiet=False):
+    sentence_metrics = hallucination_cap_dict['overall_metrics']
+    
+    for k, v in sentence_metrics.items():
+        k_str = str(k).ljust(10)
+        v_str = f'{v * 100:.01f}'
+        print(k_str, v_str, sep=': ')
+ 
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    
+    # New official script args
+    parser.add_argument("--cap_file", type=str, default='',
+                        help="path towards json or jsonl saving image ids and their captions in list of dict.")
+    parser.add_argument("--image_id_key", type=str, default="image_id",
+                        help="in each dict of cap_file, which key stores image id of coco.")
+    parser.add_argument("--caption_key", type=str, default="caption",
+                        help="in each dict of cap_file, which key stores caption of the image.")
+    parser.add_argument("--cache", type=str, default="chair.pkl",
+                        help="pre inited CHAIR evaluator object, for fast loading.")
+    parser.add_argument("--coco_path", type=str, default='',
+                        help="only use for regenerating CHAIR evaluator object, will be ignored if uses cached evaluator.")
+    parser.add_argument("--save_path", type=str, default="",
+                        help="saving CHAIR evaluate and results to json, useful for debugging the caption model.")
+                        
+    # Maintain backwards compatibility with earlier Colab framework Notebook args
+    parser.add_argument("--input_file", type=str, default="", help="Alias for --cap_file")
+    parser.add_argument("--output_file", type=str, default="", help="Alias for --save_path")
+    parser.add_argument("--coco_annotations", type=str, default="", help="Path to instances_val2014.json")
+    
+    args = parser.parse_args()
+
+    # Apply aliases
+    cap_file_path = args.input_file if args.input_file else args.cap_file
+    save_file_path = args.output_file if args.output_file else args.save_path
+    
+    # If coco_path is not defined but coco_annotations is (notebook legacy)
+    c_path = args.coco_path
+    if not c_path and args.coco_annotations:
+        c_path = os.path.dirname(args.coco_annotations)
+        if not c_path: c_path = '.'
+
+    if args.cache and os.path.exists(args.cache):
+        evaluator = pickle.load(open(args.cache, 'rb'))
+        print(f"Loaded evaluator from cache: {args.cache}")
+    else:
+        print(f"Cache not set or not exist yet, building from scratch using path: {c_path}...")
+        evaluator = CHAIR(c_path)
+        if args.cache:
+            try:
+                pickle.dump(evaluator, open(args.cache, 'wb'))
+                print(f"Cached evaluator to: {args.cache}")
+            except Exception as e:
+                print(f"Could not write cache {args.cache}: {e}")
+
+    cap_dict = evaluator.compute_chair(cap_file_path, args.image_id_key, args.caption_key) 
+    
+    print_metrics(cap_dict)
+    
+    if save_file_path:
+        save_hallucinated_words(save_file_path, cap_dict)
+        print(f"Saved extended output to {save_file_path}")
