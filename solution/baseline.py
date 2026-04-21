@@ -51,24 +51,34 @@ def main():
         print("Preparing dataset for CHAIR...")
         chair_dataset = []
         
-        # Method 1: Load from local COCO directory combined with annotations
-        if args.coco_dir and args.coco_annotations:
-            import json
+        # Method 1: Load from local COCO directory directly without parsing massive JSON
+        if args.coco_dir:
             from PIL import Image
             
             print(f"Loading local COCO from {args.coco_dir}...")
-            with open(args.coco_annotations, 'r') as f:
-                coco_gt = json.load(f)
-                
-            for img_info in coco_gt['images']:
-                img_path = os.path.join(args.coco_dir, img_info['file_name'])
-                if os.path.exists(img_path):
-                    chair_dataset.append({
-                        "image_id": img_info['id'],
-                        "image": Image.open(img_path).convert("RGB")
-                    })
-                    if args.limit and len(chair_dataset) >= args.limit:
-                        break
+            
+            if os.path.exists(args.coco_dir):
+                for filename in os.listdir(args.coco_dir):
+                    if filename.endswith(".jpg") or filename.endswith(".png"):
+                        img_path = os.path.join(args.coco_dir, filename)
+                        
+                        # Extract integer image_id from COCO format: COCO_val2014_000000391895.jpg
+                        try:
+                            # Safely extract digits
+                            image_id_str = ''.join(filter(str.isdigit, filename.split('_')[-1]))
+                            if not image_id_str:
+                                continue
+                            image_id = int(image_id_str)
+                        except Exception:
+                            continue
+                            
+                        chair_dataset.append({
+                            "image_id": image_id,
+                            "image": Image.open(img_path).convert("RGB")
+                        })
+                        
+                        if args.limit and len(chair_dataset) >= args.limit:
+                            break
         else:
             # Method 2: Fallback to try loading a default HF COCO validation dataset
             print("No local COCO provided. Attempting to load HuggingFaceM4/COCO...")
