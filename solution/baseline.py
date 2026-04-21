@@ -99,6 +99,8 @@ def main():
                 output_file=args.chair_output
             )
             print(f"==> CHAIR generation complete. Saved to {args.chair_output}")
+        else:
+            print(f"Warning: No valid CHAIR images found in {args.coco_dir} matching {args.coco_annotations}")
 
 if __name__ == "__main__":
     main()
