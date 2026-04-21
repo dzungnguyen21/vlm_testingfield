@@ -94,7 +94,7 @@ class POPEEvaluator:
             
             if found_ans is not None:
                 preds.append(found_ans)
-                labels.append(item['label'])
+                labels.append(item.get('answer', item.get('label', 'no')))
                 
         if not preds:
             logger.warning("No matching IDs found between predictions and POPE dataset.")
