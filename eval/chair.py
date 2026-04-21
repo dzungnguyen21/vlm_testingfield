@@ -44,18 +44,39 @@ class CHAIREvaluator:
             
     def _build_default_synonyms(self):
         """
-        In standard CHAIR eval, a mapping from synonym to COCO 80 classes is used.
-        Here we define a minimal fallback. 
-        For robust evaluation, please provide the standard MSCOCO synonyms.txt 
-        used in the original CHAIR paper.
+        Fallback dictionary covering the 80 standard MS-COCO classes 
+        and common aliases when a real synonyms.txt isn't provided.
         """
-        self.synonyms_dict = {
-            "person": "person", "man": "person", "woman": "person", "child": "person", "boy": "person", "girl": "person",
-            "car": "car", "auto": "car", "automobile": "car",
-            "dog": "dog", "puppy": "dog",
-            "cat": "cat", "kitten": "cat",
-            # ... add more as required
+        logger.warning("Using built-in MS-COCO 80 classes. Provide a full synonyms_file for official mapping.")
+        coco_80 = [
+            "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", 
+            "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", 
+            "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", 
+            "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", 
+            "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", 
+            "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", 
+            "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", 
+            "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", 
+            "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+        ]
+        
+        self.synonyms_dict = {c: c for c in coco_80}
+        
+        # Add basic common visual synonyms
+        aliases = {
+            "man": "person", "woman": "person", "child": "person", "boy": "person", "girl": "person", "people": "person",
+            "auto": "car", "automobile": "car", "cab": "car", "taxi": "car",
+            "puppy": "dog", "kitten": "cat", "feline": "cat", "hound": "dog",
+            "plane": "airplane", "jet": "airplane", "aeroplane": "airplane",
+            "sofa": "couch", "television": "tv", "monitor": "tv", 
+            "cellphone": "cell phone", "phone": "cell phone", "smartphone": "cell phone",
+            "bike": "bicycle", "motorbike": "motorcycle", "vespa": "motorcycle",
+            "bag": "backpack", "purse": "handbag",
+            "laptop computer": "laptop", "pc": "laptop",
+            "table": "dining table", "desk": "dining table",
+            "mug": "cup", "glass": "wine glass"
         }
+        self.synonyms_dict.update(aliases)
 
     def _load_synonyms(self, path: str):
         with open(path, 'r', encoding='utf-8') as f:
