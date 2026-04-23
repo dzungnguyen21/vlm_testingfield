@@ -11,7 +11,7 @@ def intervene_h3_attention_amplified(
     processor,
     image,
     h3_results,
-    coco=None,
+    coco,
     absence_threshold=-2.0,
     amplification_strength=2.0,    # how much to amplify visual attention
     suppression_strength=3.0,      # lighter logit suppression as backup
@@ -35,11 +35,11 @@ def intervene_h3_attention_amplified(
     best_layer = h3_results["best_layer"]
     scaler     = h3_results["scaler"]
     direction  = h3_results["direction"]
+    
     if coco is not None:
         all_cats = set(c["name"].lower() for c in coco.loadCats(coco.getCatIds()))
     else:
         all_cats = {'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'}
-
 
     n_layers  = len(model.model.language_model.layers)
     mid_start = int(n_layers * middle_layer_range[0])

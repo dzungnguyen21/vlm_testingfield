@@ -157,12 +157,8 @@ def main():
         return
         
     coco = None
-    if args.run_chair or not os.path.exists(args.h3_results_path):
+    if args.coco_annotations:
         from pycocotools.coco import COCO
-        if not args.coco_annotations:
-            print("Please provide --coco_annotations for COCO object needed by H3/CHAIR.")
-            return
-            
         print("Loading COCO annotations...")
         coco = COCO(args.coco_annotations)
 
@@ -173,8 +169,8 @@ def main():
             h3_results = pickle.load(f)
     else:
         print("H3 results not found. Generating on-the-fly using 500 images...")
-        if not args.coco_dir:
-            print("Please provide --coco_dir to generate h3_results on the fly.")
+        if not args.coco_dir or not args.coco_annotations:
+            print("ERROR: Since h3_results.pkl does not exist, you MUST provide --coco_dir and --coco_annotations to compute it on the fly!")
             return
         h3_results = build_h3_results_on_the_fly(model, processor, args.coco_dir, args.coco_annotations, limit=500)
         os.makedirs(os.path.dirname(args.h3_results_path), exist_ok=True)
